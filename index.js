@@ -76,6 +76,7 @@ async function getSpotifyToken() {
     body: 'grant_type=client_credentials',
   });
   const d = await r.json();
+  if (d.error) throw new Error(`Spotify auth failed: ${d.error_description || d.error}`);
   tokenCache = { token: d.access_token, expires: Date.now() + d.expires_in * 1000 - 5000 };
   return tokenCache.token;
 }
@@ -87,14 +88,18 @@ app.post('/api/mood-playlist', async (req, res) => {
     return res.json({ error: 'Spotify credentials not configured' });
   }
 
-  const query = `${mood} ${genre} playlist`.trim();
-  const token = await getSpotifyToken();
-
   try {
+    const query = `${mood} ${genre} playlist`.trim();
+    const token = await getSpotifyToken();
+
     const url = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist&limit=3`;
     const data = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     }).then(r => r.json());
+
+    if (data.error) {
+      return res.status(500).json({ error: `Spotify API error: ${data.error.message}` });
+    }
 
     const playlists = data.playlists?.items?.map(p => ({
       name: p.name,
