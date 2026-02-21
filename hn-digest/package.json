@@ -1,0 +1,13 @@
+{
+  "name": "hn-digest",
+  "version": "1.0.0",
+  "description": "Hacker News top stories for Join39 agents",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
