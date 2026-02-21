@@ -1,0 +1,12 @@
+{
+  "name": "crypto-ticker",
+  "version": "1.0.0",
+  "description": "Real-time cryptocurrency prices for Join39 agents",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

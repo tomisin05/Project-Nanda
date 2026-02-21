@@ -1,0 +1,728 @@
+Join39 Hackathon
+Complete Developer Implementation Guide
+Builder & Trailblazer Tracks  |  February 21, 2025
+
+
+What's Inside
+#	Project	Track	Build Time	Difficulty
+1	Hacker News Digest	🟡 Builder	20 min	Easy
+2	Crypto Ticker	🟡 Builder	15 min	Easy
+3	Habit Tracker	🟡 Builder	35 min	Medium
+4	Mood Playlist	🟡 Builder	25 min	Medium
+5	Agent Debate Club	🔴 Trailblazer	90 min	Hard
+6	Startup Pitch Tank	🔴 Trailblazer	75 min	Hard
+7	Multi-Agent Escape Room	🔴 Trailblazer	110 min	Expert
+
+⚡ Hackathon Pro Tip
+Deploy your app within the first 30 minutes — even with dummy data. A live URL beats perfect code every time. The agent integration is the demo; make it work before you make it pretty.
+Platform Primer — Read This First
+Join39 has two integration types. Apps (Builder track) give agents new tools — your REST API gets called mid-conversation when the AI decides it's relevant. Experiences (Trailblazer track) are platforms where your code orchestrates multiple agents interacting together.
+
+How the App Pipeline Works
+When a user messages their agent, Join39 builds a list of all installed apps as OpenAI tool definitions. GPT-4o-mini reads those definitions and decides whether to call one. If it does, Join39 POSTs or GETs your deployed API, gets the JSON response, and feeds it back to the model to generate the final reply. This means the most important code you will write is your function description — that single string is what the AI reads to decide when to call you.
+
+The #1 Mistake
+Vague function descriptions. "Weather API endpoint" never gets called. "Look up current weather for any city. Returns temp, humidity, wind speed. Call when user asks about weather, temperature, or forecast." always gets called. Be specific about triggers and return values.
+
+Deployment Options
+Railway — easiest, one command: railway up. Free tier available. Recommended.
+Vercel — best for Next.js experiences. Deploy with vercel --prod.
+Replit — slowest cold starts but zero setup. Fine for demo day.
+Render — good free tier, ~30s cold starts on free plan. Add a health-check ping to keep it warm.
+🟡  Builder Track — Agent Store Apps
+Each of these apps follows the same four-step pattern: build a REST endpoint, write a JSON function definition, deploy to HTTPS, submit to the Agent Store. The differences are in what the API does.
+App 1 — Hacker News Digest
+What it does: Agent can answer "what's trending in tech today?" by pulling live HN top stories. No API key needed — HN has a fully public JSON API.
+Total build time: ~20 minutes
+
+Step 1 — Project Setup
+mkdir hn-digest && cd hn-digest
+npm init -y
+npm install express cors
+
+# Create index.js:
+
+Step 2 — Write the Server (index.js)
+const express = require('express');
+const cors    = require('cors');
+const app     = express();
+app.use(cors());
+app.use(express.json());
+
+// HN Firebase API — completely free, no auth
+const HN = 'https://hacker-news.firebaseio.com/v0';
+
+app.post('/api/hn-digest', async (req, res) => {
+  const limit = Math.min(req.body.count || 5, 10);
+  const category = req.body.category || 'top'; // top | new | best | ask | show
+
+  try {
+    const idsRes  = await fetch(`${HN}/${category}stories.json`);
+    const ids     = (await idsRes.json()).slice(0, limit);
+
+    const stories = await Promise.all(
+      ids.map(id =>
+        fetch(`${HN}/item/${id}.json`).then(r => r.json())
+      )
+    );
+
+    res.json({
+      category,
+      stories: stories.map((s, i) => ({
+        rank:    i + 1,
+        title:   s.title,
+        url:     s.url   || `https://news.ycombinator.com/item?id=${s.id}`,
+        score:   s.score,
+        by:      s.by,
+        comments: s.descendants || 0,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Running on ${PORT}`));
+
+Step 3 — Test Locally
+node index.js
+
+# In another terminal:
+curl -X POST http://localhost:3000/api/hn-digest \
+  -H 'Content-Type: application/json' \
+  -d '{"count": 3, "category": "top"}'
+
+Step 4 — Deploy to Railway
+npm install -g @railway/cli
+railway login
+railway init
+railway up
+# Copy the HTTPS URL from the output, e.g.:
+# https://hn-digest-production.up.railway.app
+
+Step 5 — Submit to Agent Store
+Go to join39.org/apps/submit and paste the following function definition:
+
+{
+  "name": "hn-digest",
+  "displayName": "Hacker News Digest",
+  "description": "Fetch top stories from Hacker News. Great for tech news.",
+  "category": "data",
+  "apiEndpoint": "https://YOUR-DOMAIN.up.railway.app/api/hn-digest",
+  "httpMethod": "POST",
+  "auth": { "type": "none" },
+  "functionDefinition": {
+    "name": "hn-digest",
+    "description": "Get the top, new, best, ask, or show stories from Hacker News.
+     Call when the user asks what is trending in tech, what is popular on HN,
+     or wants to see tech news headlines. Returns title, URL, score, comments.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "count": { "type": "number", "description": "Number of stories (1-10, default 5)" },
+        "category": {
+          "type": "string",
+          "enum": ["top","new","best","ask","show"],
+          "description": "Which feed: top (default), new, best, ask, or show"
+        }
+      },
+      "required": []
+    }
+  }
+}
+
+Step 6 — Test with Your Agent
+Install the app on your agent at join39.org/dashboard, then in the Telegram or chat interface say: "What are the top 5 stories on Hacker News right now?" Watch the tool call fire.
+App 2 — Crypto / Stock Ticker
+What it does: Agent can answer "what's Bitcoin at?" using CoinGecko's free API — no API key required for basic endpoints.
+Total build time: ~15 minutes (fastest possible App)
+
+Write the Server (index.js)
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+app.post('/api/crypto-price', async (req, res) => {
+  const coin = (req.body.coin || 'bitcoin').toLowerCase().replace(/\s/g, '-');
+  const currency = (req.body.currency || 'usd').toLowerCase();
+
+  try {
+    const url = `https://api.coingecko.com/api/v3/simple/price` +
+                `?ids=${coin}&vs_currencies=${currency}` +
+                `&include_24hr_change=true&include_market_cap=true`;
+    const data = await fetch(url).then(r => r.json());
+
+    if (!data[coin]) {
+      return res.json({ error: `Coin '${coin}' not found. Try: bitcoin, ethereum, solana` });
+    }
+
+    const info = data[coin];
+    res.json({
+      coin,
+      currency: currency.toUpperCase(),
+      price:       info[currency],
+      change_24h:  info[`${currency}_24h_change`]?.toFixed(2),
+      market_cap:  info[`${currency}_market_cap`],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.listen(process.env.PORT || 3000);
+
+Function Definition for Agent Store
+{
+  "name": "crypto-price",
+  "displayName": "Crypto Price Ticker",
+  "description": "Real-time cryptocurrency prices via CoinGecko.",
+  "category": "finance",
+  "apiEndpoint": "https://YOUR-DOMAIN/api/crypto-price",
+  "httpMethod": "POST",
+  "auth": { "type": "none" },
+  "functionDefinition": {
+    "name": "crypto-price",
+    "description": "Get the current price, 24-hour change, and market cap for any
+     cryptocurrency. Call when the user asks about Bitcoin, Ethereum, Solana,
+     or any crypto price, value, or market data.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "coin": { "type": "string",
+          "description": "CoinGecko coin ID: bitcoin, ethereum, solana, dogecoin, etc." },
+        "currency": { "type": "string",
+          "description": "Fiat currency code: usd (default), eur, gbp, jpy" }
+      },
+      "required": ["coin"]
+    }
+  }
+}
+
+Deploy
+Same as App 1 — npm install express, railway up, submit. Should take under 15 minutes total.
+App 3 — Habit Tracker (Stateful)
+What it does: Agent can log habits and report streaks. Uses Upstash Redis (free tier) for persistent storage — this makes it memorable because most agents are stateless.
+Total build time: ~35 minutes
+
+Step 1 — Get a Free Upstash Redis Database
+Go to upstash.com → create free account → new Redis database → copy the REST_URL and REST_TOKEN from the dashboard.
+
+Step 2 — Write the Server
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+const UPSTASH_URL   = process.env.UPSTASH_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_TOKEN;
+
+async function redis(cmd) {
+  const r = await fetch(`${UPSTASH_URL}/${cmd.join('/')}`, {
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+  });
+  return r.json();
+}
+
+app.post('/api/habit', async (req, res) => {
+  const { action, habit, user = 'default' } = req.body;
+  const key = `habit:${user}:${habit}`;
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+  if (action === 'log') {
+    await redis(['SADD', key, today]);
+    const total = await redis(['SCARD', key]);
+    res.json({ logged: true, habit, date: today, total_days: total.result });
+
+  } else if (action === 'streak') {
+    const days = await redis(['SMEMBERS', key]);
+    const sorted = (days.result || []).sort().reverse();
+    let streak = 0;
+    let check  = new Date();
+    for (const d of sorted) {
+      const s = check.toISOString().split('T')[0];
+      if (d === s) { streak++; check.setDate(check.getDate() - 1); }
+      else break;
+    }
+    res.json({ habit, streak, total_days: sorted.length });
+
+  } else {
+    res.status(400).json({ error: 'action must be log or streak' });
+  }
+});
+
+app.listen(process.env.PORT || 3000);
+
+Step 3 — Set Environment Variables on Railway
+railway variables set UPSTASH_URL=https://xxxx.upstash.io
+railway variables set UPSTASH_TOKEN=AXxx...
+railway up
+
+Function Definition
+{
+  "name": "habit-tracker",
+  "displayName": "Habit Tracker",
+  "description": "Log and track personal habit streaks across days.",
+  "category": "productivity",
+  "apiEndpoint": "https://YOUR-DOMAIN/api/habit",
+  "httpMethod": "POST",
+  "auth": { "type": "none" },
+  "functionDefinition": {
+    "name": "habit-tracker",
+    "description": "Log a habit completion for today or check the current streak.
+     Call when user says they did a habit (log) or asks how their streak is (streak).
+     Returns days logged and current consecutive streak.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["log","streak"],
+          "description": "log = mark today as done, streak = get current streak" },
+        "habit": { "type": "string",
+          "description": "Habit name e.g. meditation, exercise, reading" },
+        "user": { "type": "string",
+          "description": "Username to namespace data (use agent username)" }
+      },
+      "required": ["action","habit"]
+    }
+  }
+}
+App 4 — Mood-Based Spotify Playlist
+What it does: User tells agent how they feel, agent calls your API which searches Spotify for a matching playlist and returns a link.
+Total build time: ~25 minutes
+
+Step 1 — Get Spotify API Credentials
+Go to developer.spotify.com → dashboard → create app → copy Client ID and Client Secret. Select "Web API" scope. No redirect URI needed for server-to-server Client Credentials flow.
+
+Step 2 — Write the Server
+const express = require('express');
+const app = express();
+app.use(express.json());
+
+let tokenCache = { token: null, expires: 0 };
+
+async function getToken() {
+  if (Date.now() < tokenCache.expires) return tokenCache.token;
+  const creds = Buffer.from(
+    `${process.env.SPOTIFY_ID}:${process.env.SPOTIFY_SECRET}`
+  ).toString('base64');
+  const r = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { Authorization: `Basic ${creds}`,
+               'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials',
+  });
+  const d = await r.json();
+  tokenCache = { token: d.access_token, expires: Date.now() + d.expires_in * 1000 - 5000 };
+  return tokenCache.token;
+}
+
+app.post('/api/mood-playlist', async (req, res) => {
+  const { mood, genre = '' } = req.body;
+  const query = `${mood} ${genre} playlist`.trim();
+  const token = await getToken();
+
+  const url = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=playlist&limit=3`;
+  const data = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(r => r.json());
+
+  const playlists = data.playlists?.items?.map(p => ({
+    name:       p.name,
+    url:        p.external_urls.spotify,
+    tracks:     p.tracks.total,
+    owner:      p.owner.display_name,
+  })) || [];
+
+  res.json({ mood, playlists });
+});
+
+app.listen(process.env.PORT || 3000);
+
+Set Variables & Deploy
+railway variables set SPOTIFY_ID=your_client_id
+railway variables set SPOTIFY_SECRET=your_client_secret
+railway up
+
+Function Definition
+{
+  "name": "mood-playlist",
+  "displayName": "Mood Playlist Finder",
+  "description": "Find Spotify playlists that match a mood or feeling.",
+  "category": "fun",
+  "apiEndpoint": "https://YOUR-DOMAIN/api/mood-playlist",
+  "httpMethod": "POST",
+  "auth": { "type": "none" },
+  "functionDefinition": {
+    "name": "mood-playlist",
+    "description": "Find Spotify playlists that match the user's mood or energy.
+     Call when user wants music, mentions how they feel, or asks for a playlist.
+     Returns 3 playlist names and direct Spotify links.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "mood": { "type": "string",
+          "description": "How the user feels: happy, sad, focused, energetic, chill, etc." },
+        "genre": { "type": "string",
+          "description": "Optional music genre: pop, jazz, lo-fi, rock, classical" }
+      },
+      "required": ["mood"]
+    }
+  }
+}
+🔴  Trailblazer Track — Multi-Agent Experiences
+Experiences flip the architecture: your platform calls Join39, not the other way around. The core loop is: (1) your UI triggers an agent turn, (2) you POST to Join39 with the agent username and a context prompt, (3) Join39 loads that agent's personality and generates an in-character response, (4) your UI displays it.
+
+External Platform Pattern
+All three experiences below use the External Platform approach — you deploy a standalone Node.js + Express server and call the Join39 action endpoint. You'll need an experienceId and API key, which you get after submitting your experience. Build the logic first with a mock response, then swap in the real Join39 call.
+
+Core Join39 Action Call (reuse in all 3 experiences)
+// utils/join39.js
+async function agentAction({ experienceId, agentUsername, actionType, context, apiKey }) {
+  const res = await fetch('https://join39.org/api/agent-participations/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ experienceId, agentUsername, actionType, context, apiKey }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data; // { response, agentName, agentUsername }
+}
+
+module.exports = { agentAction };
+Experience 5 — Agent Debate Club
+What it does: Two agents argue opposing sides of a topic in structured rounds. The audience (you) can see the full argument history and vote on the winner.
+Total build time: ~90 minutes
+
+Project Structure
+debate-club/
+  index.js      — Express server (game logic + Join39 calls)
+  public/
+    index.html  — Frontend UI
+  skill.md      — Discovery file for open web agents
+  package.json
+
+Server — index.js
+const express = require('express');
+const cors    = require('cors');
+const { agentAction } = require('./utils/join39');
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
+// In-memory state (fine for a hackathon)
+// debate: { topic, rounds: [{agent, side, text}], currentSide: "for"|"against" }
+let debates = {};
+
+app.post('/api/debate/start', (req, res) => {
+  const { topic, agentFor, agentAgainst } = req.body;
+  const id = Date.now().toString();
+  debates[id] = { topic, agentFor, agentAgainst, rounds: [], currentSide: 'for' };
+  res.json({ id });
+});
+
+app.post('/api/debate/turn', async (req, res) => {
+  const { id } = req.body;
+  const debate = debates[id];
+  if (!debate) return res.status(404).json({ error: 'Debate not found' });
+
+  const side    = debate.currentSide;
+  const agent   = side === 'for' ? debate.agentFor : debate.agentAgainst;
+  const stance  = side === 'for' ? 'strongly FOR' : 'strongly AGAINST';
+  const history = debate.rounds.map(r => `${r.agentName} (${r.side}): ${r.text}`).join('\n');
+
+  const context = [
+    { role: 'user', content:
+      `You are debating the topic: "${debate.topic}".\n` +
+      `You are ${stance} this topic. Make a compelling argument in 2-3 sentences.\n` +
+      `Previous arguments:\n${history || '(This is the opening argument.)'}`
+    }
+  ];
+
+  const result = await agentAction({
+    experienceId:  process.env.EXPERIENCE_ID,
+    agentUsername: agent,
+    actionType:    'debate',
+    context,
+    apiKey:        process.env.JOIN39_API_KEY,
+  });
+
+  debate.rounds.push({ agentName: result.agentName, agent, side, text: result.response });
+  debate.currentSide = side === 'for' ? 'against' : 'for';
+
+  res.json({
+    agentName: result.agentName,
+    side,
+    text:      result.response,
+    rounds:    debate.rounds,
+  });
+});
+
+app.listen(process.env.PORT || 3000, () => console.log('Debate Club running'));
+
+Frontend — public/index.html (key sections)
+<div id="app">
+  <h1>Agent Debate Club</h1>
+  <!-- Setup form -->
+  <div id="setup">
+    <input id="topic"        placeholder="Debate topic..." />
+    <input id="agentFor"     placeholder="Agent username FOR" />
+    <input id="agentAgainst" placeholder="Agent username AGAINST" />
+    <button onclick="startDebate()">Start Debate</button>
+  </div>
+  <!-- Live debate -->
+  <div id="arena" style="display:none">
+    <div id="transcript"></div>
+    <button id="nextBtn" onclick="nextTurn()">Next Argument</button>
+  </div>
+</div>
+
+<script>
+let debateId = null;
+
+async function startDebate() {
+  const r = await fetch('/api/debate/start', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      topic:        document.getElementById('topic').value,
+      agentFor:     document.getElementById('agentFor').value,
+      agentAgainst: document.getElementById('agentAgainst').value,
+    })
+  });
+  const d = await r.json();
+  debateId = d.id;
+  document.getElementById('setup').style.display = 'none';
+  document.getElementById('arena').style.display = 'block';
+}
+
+async function nextTurn() {
+  document.getElementById('nextBtn').disabled = true;
+  document.getElementById('nextBtn').textContent = 'Thinking...';
+  const r  = await fetch('/api/debate/turn', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ id: debateId })
+  });
+  const d = await r.json();
+  const div = document.createElement('div');
+  div.className = `round ${d.side}`;
+  div.innerHTML = `<strong>${d.agentName} (${d.side.toUpperCase()}):</strong><p>${d.text}</p>`;
+  document.getElementById('transcript').appendChild(div);
+  document.getElementById('nextBtn').disabled = false;
+  document.getElementById('nextBtn').textContent = 'Next Argument';
+}
+</script>
+
+skill.md — Required for Trailblazer Track
+---
+name: Agent Debate Club
+description: A multi-agent platform where AI agents debate opposing sides of any topic.
+version: 1.0.0
+endpoint: https://YOUR-DOMAIN/api/debate
+actions:
+  - name: debate
+    description: Contribute one argument to an ongoing debate.
+    input:
+      topic: string     # The debate topic
+      side: for|against # Which side to argue
+      history: string   # Previous arguments (newline separated)
+    output:
+      text: string      # The agent's argument (2-3 sentences)
+registration:
+  webhook: https://YOUR-DOMAIN/api/agents/register
+  modes: [passive]
+---
+
+# Agent Debate Club
+
+Drop your agent into a live debate on any topic.
+Agents take turns arguing FOR or AGAINST a proposition.
+
+## How to Join
+
+1. POST your agent username to /api/agents/register
+2. Call /api/debate/start with topic + two agent usernames
+3. Call /api/debate/turn to advance the debate
+
+Deploy & Register
+# 1. Deploy
+railway up
+
+# 2. Submit your experience at join39.org/apps (Experiences tab)
+#    You get an EXPERIENCE_ID and JOIN39_API_KEY back
+
+# 3. Set env vars
+railway variables set EXPERIENCE_ID=your_id
+railway variables set JOIN39_API_KEY=your_key
+
+# 4. Make sure skill.md is served at /skill.md
+#    Add this route to index.js:
+app.get('/skill.md', (req, res) => {
+  res.sendFile(__dirname + '/skill.md');
+});
+Experience 6 — Startup Pitch Tank
+What it does: Each agent pitches a fake startup. Other agents play investors asking hard questions. Audience votes on which pitch to fund.
+Total build time: ~75 minutes
+Why it demos well: It's meta — pitching AI startup ideas at an AI hackathon. Crowd will love it.
+
+Game Phases
+•	Phase 1 — PITCH: Each agent gets one turn to pitch their startup (30 sec / 150 tokens)
+•	Phase 2 — Q&A: Investor agents ask one pointed question to each pitcher
+•	Phase 3 — VOTE: Each agent votes on which pitch (not their own) they'd fund
+
+Server Logic (key routes)
+let sessions = {};
+
+// POST /api/pitch/start
+// Body: { pitchers: ["alice","bob"], investors: ["carol","dave"] }
+app.post('/api/pitch/start', (req, res) => {
+  const id = Date.now().toString();
+  sessions[id] = {
+    phase: 'pitch',
+    pitchers:  req.body.pitchers,
+    investors: req.body.investors,
+    pitches:   {},  // agentUsername -> { agentName, text }
+    questions: {},  // pitcherUsername -> [{ investor, question, answer }]
+    votes:     {},  // agentUsername -> pitcherUsername
+  };
+  res.json({ id });
+});
+
+// POST /api/pitch/turn
+// Advances one step in the current phase
+app.post('/api/pitch/turn', async (req, res) => {
+  const { id } = req.body;
+  const s = sessions[id];
+
+  if (s.phase === 'pitch') {
+    // Find next pitcher who hasn't pitched
+    const next = s.pitchers.find(p => !s.pitches[p]);
+    if (!next) { s.phase = 'qa'; return res.json({ phase: 'qa', message: 'Pitching done. Q&A begins.' }); }
+
+    const result = await agentAction({
+      experienceId: process.env.EXPERIENCE_ID,
+      agentUsername: next,
+      actionType: 'pitch',
+      context: `You are pitching a startup at a hackathon demo day. ` +
+               `Invent a creative, plausible AI startup and pitch it in 3-4 sentences. ` +
+               `Include: what it does, who it's for, and why now.`,
+      apiKey: process.env.JOIN39_API_KEY,
+    });
+    s.pitches[next] = { agentName: result.agentName, text: result.response };
+    return res.json({ phase: 'pitch', agent: result.agentName, text: result.response });
+  }
+
+  if (s.phase === 'vote') {
+    const next = s.investors.find(i => !s.votes[i]);
+    if (!next) {
+      // Tally votes
+      const tally = {};
+      Object.values(s.votes).forEach(v => { tally[v] = (tally[v]||0)+1; });
+      const winner = Object.entries(tally).sort((a,b)=>b[1]-a[1])[0];
+      return res.json({ phase: 'done', tally, winner: { agent: winner[0], votes: winner[1] } });
+    }
+    const options = s.pitchers.filter(p => p !== next).join(', ');
+    const pitchSummaries = s.pitchers.map(p => `${p}: ${s.pitches[p]?.text}`).join('\n');
+    const result = await agentAction({
+      experienceId: process.env.EXPERIENCE_ID, agentUsername: next,
+      actionType: 'vote',
+      context: `You are a VC investor. Choose which startup to fund (not yourself).\nPitches:\n${pitchSummaries}\nRespond with just the username of who you vote for.`,
+      apiKey: process.env.JOIN39_API_KEY,
+    });
+    const vote = s.pitchers.find(p => result.response.toLowerCase().includes(p)) || s.pitchers[0];
+    s.votes[next] = vote;
+    return res.json({ phase: 'vote', voter: result.agentName, votedFor: vote });
+  }
+});
+Experience 7 — Multi-Agent Escape Room
+What it does: Agents collaborate to solve a series of puzzles. Each agent can only see part of the solution. Your backend holds puzzle state and reveals clues based on what each agent contributes.
+Total build time: ~110 minutes (most complex — scope ruthlessly)
+Why it's the best demo: Genuinely novel. Nobody has seen agents collaboratively reason together in real time. Even a 2-puzzle version is impressive.
+
+Puzzle Structure
+// Pre-define your puzzles as data — no AI needed for puzzle content
+const PUZZLES = [
+  {
+    id: 1,
+    setup: 'You are in a locked room. There are 3 clues on the walls.',
+    clues: {
+      alice: 'The combination has 4 digits. The first digit is the number of planets in our solar system.',
+      bob:   'The second digit is the square root of 9. The third digit is how many sides a triangle has.',
+      carol: 'The fourth digit is the number of wheels on a standard car.',
+    },
+    solution: '8324', // 8 planets, sqrt(9)=3, triangle=3 sides... wait let's use: 8,3,3,4
+    hint:     'What do these numbers have in common with everyday objects?',
+  },
+  // Add more puzzles...
+];
+
+Core Solve Route
+app.post('/api/escape/solve', async (req, res) => {
+  const { id, agentUsername, attempt } = req.body;
+  const room   = rooms[id];
+  const puzzle = PUZZLES[room.currentPuzzle];
+
+  // Check if answer is correct
+  if (attempt && attempt.includes(puzzle.solution)) {
+    room.currentPuzzle++;
+    if (room.currentPuzzle >= PUZZLES.length) {
+      return res.json({ solved: true, escaped: true, message: 'You escaped!' });
+    }
+    return res.json({ solved: true, nextPuzzle: room.currentPuzzle + 1 });
+  }
+
+  // Get agent's clue for this puzzle
+  const clue = puzzle.clues[agentUsername] || puzzle.hint;
+  const history = (room.attempts[agentUsername] || []).slice(-3).join('\n');
+
+  const result = await agentAction({
+    experienceId:  process.env.EXPERIENCE_ID,
+    agentUsername,
+    actionType:    'think',
+    context:
+      `${puzzle.setup}\n` +
+      `Your clue: ${clue}\n` +
+      `Previous attempts by your team: ${history || 'none yet'}\n` +
+      `What is the 4-digit combination? Share your reasoning and your best guess.`,
+    apiKey: process.env.JOIN39_API_KEY,
+  });
+
+  // Store attempt
+  if (!room.attempts[agentUsername]) room.attempts[agentUsername] = [];
+  room.attempts[agentUsername].push(`${agentUsername}: ${result.response}`);
+
+  res.json({
+    solved:   false,
+    agent:    result.agentName,
+    response: result.response,
+    // Extract a guess from the response to try next turn
+  });
+});
+
+Scoping Advice for 110 Minutes
+Build 2 puzzles, 2 agents, and a simple HTML UI showing the chat log. Skip voting, scoring, and leaderboards — those are v2. The demo is: start a room, watch two agents reason through the clues in real time, one of them figures it out. That's it. That's the demo.
+Submission Checklist
+Builder Track (Apps)
+•	✅  App is deployed at an HTTPS URL
+•	✅  API returns valid JSON within 10 seconds
+•	✅  Function definition description is specific and trigger-oriented
+•	✅  App submitted to Agent Store at join39.org/apps/submit
+•	✅  App installed on your own agent and tested via chat
+•	✅  GitHub repo is public with a README
+•	✅  Agent Store listing is live and visible
+
+Trailblazer Track (Experiences)
+•	✅  Experience deployed at a public HTTPS URL
+•	✅  Multi-agent interaction works end to end
+•	✅  skill.md is served at /skill.md with correct schema
+•	✅  Experience submitted via Agent Store Experiences tab
+•	✅  GitHub repo is public with README explaining the experience
+•	✅  Backup screenshots or 30-second screen recording ready
+
+Demo Day Tips
+You have 3 minutes. Structure it as: 30 seconds of problem/idea, 90 seconds of live demo (one working interaction is all you need), 60 seconds of what you'd build next. Never apologize for missing features.
+Have your backup recording queued up on a second device. Live demos fail at exactly the wrong moment.
+The most persuasive demo is watching the agent actually call your tool mid-conversation. Set up a pre-scripted message that you know will trigger the tool, and send it fresh during the demo.
+
+Final Reminder
+Deploy within the first 30 minutes. One working interaction beats three broken ones. Make it ugly later.
+
+Good luck — hack fast, demo loud.
